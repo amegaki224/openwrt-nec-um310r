@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# The AMM570 can finish IPCP before netifd has completed registration of the
+# custom amm570 protocol handler.  In that race, the stock ppp-up notification
+# is lost: the kernel PPP device has an address, while netifd remains pending
+# and installs neither the default route nor the dynamic DHCPv6 child.
+#
+# A three-second delay was validated across repeated dual-stack reconnects.
+sleep 3
+
+/lib/netifd/ppp-up "$@"
+# The stock hook returns 1 when /etc/ppp/ip-up.d is absent despite a successful
+# notify_proto call.  The notification result, not that optional directory, matters.

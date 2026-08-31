@@ -1,0 +1,163 @@
+#!/bin/sh
+
+ACTION="$1"
+ATDEV="${2:-/dev/ttyUSB1}"
+CID="${3:-2}"
+LOCKDIR="/var/lock/um310r-at.lock"
+AT_TMPFILES=""
+
+at_unlock()
+{
+	local owner
+
+	owner="$(cat "$LOCKDIR/pid" 2>/dev/null)"
+	[ "$owner" = "$$" ] || return 0
+
+	rm -f "$LOCKDIR/pid"
+	rmdir "$LOCKDIR" 2>/dev/null || true
+}
+
+at_cleanup()
+{
+	[ -z "$AT_TMPFILES" ] || rm -f $AT_TMPFILES
+	at_unlock
+}
+
+at_lock()
+{
+	local tries=0 owner
+
+	mkdir -p /var/lock
+
+	while ! mkdir "$LOCKDIR" 2>/dev/null; do
+		owner="$(cat "$LOCKDIR/pid" 2>/dev/null)"
+
+		if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+			rm -f "$LOCKDIR/pid"
+			rmdir "$LOCKDIR" 2>/dev/null || true
+			continue
+		fi
+
+		tries=$((tries + 1))
+		[ "$tries" -lt 15 ] || return 1
+		sleep 1
+	done
+
+	echo "$$" >"$LOCKDIR/pid"
+	trap at_cleanup EXIT
+	trap 'exit 1' HUP INT TERM
+	return 0
+}
+
+case "$ACTION" in
+setup)
+	at_lock || exit 1
+
+	PDPTYPE="${4:-IPV4V6}"
+	APN="$5"
+	USERNAME="$6"
+	PASSWORD="$7"
+
+	[ -c "$ATDEV" ] || exit 1
+	[ -n "$APN" ] || exit 1
+
+	# Try to clean up an old PDP session first.
+	# Failure here is harmless if context is already inactive.
+	chat -t 5 \
+		'' 'AT' \
+		'OK' "AT+CGACT=0,$CID" \
+		'OK' \
+		<"$ATDEV" >"$ATDEV" 2>/dev/null || true
+
+	sleep 1
+
+	TMP="/tmp/amm570-at-$$"
+	AT_TMPFILES="$TMP"
+
+	if [ -n "$USERNAME" ]; then
+		cat >"$TMP" <<EOT
+ABORT 'ERROR'
+TIMEOUT 10
+'' AT
+OK ATE0
+OK AT+CGDCONT=$CID,"$PDPTYPE","$APN"
+OK AT\$QCPDPP=$CID,3,"$USERNAME","$PASSWORD"
+OK
+EOT
+	else
+		cat >"$TMP" <<EOT
+ABORT 'ERROR'
+TIMEOUT 10
+'' AT
+OK ATE0
+OK AT+CGDCONT=$CID,"$PDPTYPE","$APN"
+OK
+EOT
+	fi
+
+	chat -t 10 -f "$TMP" <"$ATDEV" >"$ATDEV"
+	exit "$?"
+	;;
+
+disconnect)
+	[ -c "$ATDEV" ] || exit 0
+	at_lock || exit 1
+
+	chat -t 5 \
+		'' 'AT' \
+		'OK' 'ATH' \
+		'OK' \
+		<"$ATDEV" >"$ATDEV" 2>/dev/null || true
+
+	chat -t 5 \
+		'' 'AT' \
+		'OK' "AT+CGACT=0,$CID" \
+		'OK' \
+		<"$ATDEV" >"$ATDEV" 2>/dev/null || true
+
+	exit 0
+	;;
+
+signal)
+	[ -c "$ATDEV" ] || exit 1
+	at_lock || exit 1
+
+	TMP="/tmp/amm570-csq-$$"
+	REPORT="$TMP.report"
+	AT_TMPFILES="$TMP $REPORT"
+
+	cat >"$TMP" <<'EOT'
+REPORT '+CSQ:'
+ABORT 'ERROR'
+TIMEOUT 5
+'' 'AT+CSQ'
+'OK'
+EOT
+
+	chat -t 5 -r "$REPORT" -f "$TMP" \
+		<"$ATDEV" >"$ATDEV" 2>/dev/null || exit 1
+
+	CSQ="$(sed -n \
+		's/.*+CSQ:[[:space:]]*\([0-9][0-9]*\),.*/\1/p' \
+		"$REPORT" | tail -n 1)"
+
+	case "$CSQ" in
+		''|*[!0-9]*) exit 1 ;;
+	esac
+
+	if [ "$CSQ" -le 31 ] || [ "$CSQ" -eq 99 ]; then
+		echo "$CSQ"
+		exit 0
+	fi
+
+	exit 1
+	;;
+
+*)
+	echo "Usage:"
+	echo "  $0 setup <atdev> <cid> <IP|IPV6|IPV4V6> <apn> [username] [password]"
+	echo "  $0 disconnect <atdev> <cid>"
+	echo "  $0 signal [atdev]"
+	exit 2
+	;;
+esac

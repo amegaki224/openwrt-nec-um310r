@@ -1,17 +1,17 @@
 # OpenWrt support for NEC Magnus uM310R
 
 Community bring-up work for the NEC Magnus Communications uM310R A1 router,
-based on the Qualcomm Atheros AR9344 SoC and an AM Telecom AMM570 LTE modem.
+based on the Qualcomm Atheros AR9350 SoC (AR9344-compatible in the Linux
+device-tree implementation) and an AM Telecom AMM570 LTE modem.
 
-This repository currently contains the reviewed patch set and hardware notes
-recovered during device bring-up. The complete OpenWrt build-tree diff and
-reproducible build instructions will be added from the build server.
+This repository contains the reviewed bring-up patches, hardware notes, and a
+complete source overlay exported from the tested OpenWrt 25.12 build tree.
 
 ## Confirmed hardware
 
-- SoC: Qualcomm Atheros AR9344
+- SoC: Qualcomm Atheros AR9350, using AR9344-compatible ath79 support
 - Flash: 16 MiB SPI NOR, 64 KiB erase blocks
-- RAM: 64 MiB
+- RAM: 128 MiB
 - WLAN: integrated 2.4 GHz ath9k WMAC
 - LTE: AM Telecom AMM570, PPP data on `/dev/ttyACM0`, AT control on `/dev/ttyUSB1`
 - Ethernet: two LAN ports through the integrated switch
@@ -39,7 +39,17 @@ BBR and FullCone NAT are included in the tested firmware but intentionally are
 not enabled by default. FullCone is configured in the firewall `defaults`
 section by the imported firewall4 implementation, not directly on the WAN zone.
 
-## Patch order
+## Complete source overlay
+
+`openwrt-overlay/` preserves the original OpenWrt tree paths. Copy it over a
+matching OpenWrt 25.12 checkout before running the normal feed, configuration,
+and build steps. See [openwrt-overlay/README.md](openwrt-overlay/README.md).
+
+The public overlay intentionally omits carrier authentication credentials.
+Configure the APN, username, and password in LuCI or UCI when required by the
+installed SIM.
+
+## Historical patch order
 
 Apply the patches in `patches/` in numeric order against the matching uM310R
 OpenWrt 25.12 working tree:
@@ -48,10 +58,9 @@ OpenWrt 25.12 working tree:
 2. `0002-um310r-automatic-leds.patch`
 3. `0003-um310r-ppp-netifd-race-fix.patch`
 
-These are incremental patches produced during bring-up. They do not yet include
-the initial board DTS, AMM570 package, RFC 7278 integration, or the imported
-FullCone patch stack; those remain in the build server tree and are pending a
-complete export.
+These are incremental patches produced during bring-up and retained for review.
+For a complete source import, use `openwrt-overlay/`, which also includes the
+initial board DTS, AMM570 package, RFC 7278 integration, and FullCone patch stack.
 
 ## U-Boot reset warning
 

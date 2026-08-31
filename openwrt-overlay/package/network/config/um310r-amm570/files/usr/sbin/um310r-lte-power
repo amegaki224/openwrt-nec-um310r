@@ -1,0 +1,111 @@
+#!/bin/sh
+
+log()
+{
+	logger -t um310r-lte "$*"
+	echo "um310r-lte: $*" >&2
+}
+
+is_amm570_present()
+{
+	for d in /sys/bus/usb/devices/*; do
+		[ -f "$d/idVendor" ] || continue
+		[ -f "$d/idProduct" ] || continue
+
+		v="$(cat "$d/idVendor" 2>/dev/null)"
+		p="$(cat "$d/idProduct" 2>/dev/null)"
+
+		[ "$v" = "1ecb" ] && [ "$p" = "0202" ] && return 0
+	done
+
+	return 1
+}
+
+# Only run on uM310R
+BOARD="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ "$BOARD" = "nec,um310r" ] || {
+	log "board is $BOARD, refusing uM310R LTE power sequence"
+	exit 1
+}
+
+if ! is_amm570_present; then
+	log "powering AMM570"
+
+	# AR9344 GPIO12 = Linux gpio524
+	echo 524 >/sys/class/gpio/export 2>/dev/null || true
+	[ -e /sys/class/gpio/gpio524/direction ] || {
+		log "GPIO524 unavailable"
+		exit 1
+	}
+
+	echo low >/sys/class/gpio/gpio524/direction || exit 1
+	sleep 3
+
+	# PCA9539 @ I2C 0x74
+	#
+	# P0.5 = logical pin35 -> LOW
+	# P0.7 = logical pin37 -> LOW
+	# P1.3 = logical pin43 -> HIGH then LOW
+	#
+	i2cset -y 0 0x74 0x02 0x5f || exit 1
+	i2cset -y 0 0x74 0x03 0xff || exit 1
+
+	i2cset -y 0 0x74 0x06 0x5f || exit 1
+	i2cset -y 0 0x74 0x07 0xf7 || exit 1
+
+	sleep 2
+
+	i2cset -y 0 0x74 0x03 0xf7 || exit 1
+
+	log "AMM570 power-key sequence complete"
+fi
+
+# Wait for USB device
+i=0
+while [ "$i" -lt 20 ]; do
+	is_amm570_present && break
+	sleep 1
+	i=$((i + 1))
+done
+
+is_amm570_present || {
+	log "AMM570 USB device did not appear"
+	exit 1
+}
+
+# ttyACM0 should be supplied by cdc_acm
+i=0
+while [ "$i" -lt 10 ]; do
+	[ -e /dev/ttyACM0 ] && break
+	sleep 1
+	i=$((i + 1))
+done
+
+[ -e /dev/ttyACM0 ] || {
+	log "ttyACM0 did not appear"
+	exit 1
+}
+
+# Bind AM Telecom vendor interfaces to generic usbserial.
+# Ignore EEXIST if VID:PID was already registered.
+if [ ! -e /dev/ttyUSB1 ]; then
+	if [ -w /sys/bus/usb-serial/drivers/generic/new_id ]; then
+		echo 1ecb 0202 \
+			>/sys/bus/usb-serial/drivers/generic/new_id 2>/dev/null || true
+	fi
+fi
+
+i=0
+while [ "$i" -lt 10 ]; do
+	[ -e /dev/ttyUSB1 ] && break
+	sleep 1
+	i=$((i + 1))
+done
+
+[ -e /dev/ttyUSB1 ] || {
+	log "ttyUSB1 did not appear"
+	exit 1
+}
+
+log "AMM570 ready: AT=/dev/ttyUSB1 PPP=/dev/ttyACM0"
+exit 0

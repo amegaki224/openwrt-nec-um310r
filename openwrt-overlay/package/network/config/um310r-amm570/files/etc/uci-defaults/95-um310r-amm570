@@ -1,0 +1,32 @@
+#!/bin/sh
+
+BOARD="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ "$BOARD" = "nec,um310r" ] || exit 0
+
+uci -q get network.wan >/dev/null || \
+	uci set network.wan='interface'
+
+uci set network.wan.proto='amm570'
+
+uci set network.wan.device='/dev/ttyACM0'
+uci set network.wan.atdevice='/dev/ttyUSB1'
+
+uci set network.wan.apn='plus.acs.jp.v6'
+uci set network.wan.cid='2'
+uci set network.wan.pdptype='IPV4V6'
+
+# Configure optional carrier credentials through LuCI or UCI.
+uci -q delete network.wan.username
+uci -q delete network.wan.password
+
+uci set network.wan.ipv6='auto'
+uci set network.wan.peerdns='1'
+
+uci set network.wan.persist='1'
+uci set network.wan.maxfail='0'
+uci set network.wan.holdoff='5'
+uci set network.wan.keepalive='3 10'
+
+uci commit network
+
+exit 0

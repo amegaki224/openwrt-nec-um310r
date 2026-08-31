@@ -1,0 +1,256 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+
+#include "ar9344.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "NEC Magnus uM310R";
+	compatible = "nec,um310r", "qca,ar9344";
+
+	aliases {
+		label-mac-device = &eth0;
+	};
+
+	/*
+	 * PWR is hard-wired to the power rail and has no software GPIO.
+	 * ANT, COM and ALM are two-die red/green LEDs; enabling both
+	 * channels produces orange.
+	 * LAN1/LAN2 are configured below as switch hardware LEDs.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		ant_green: ant-green {
+			label = "nec:green:ant";
+			gpios = <&gpio 0 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		ant_red: ant-red {
+			label = "nec:red:ant";
+			gpios = <&gpio 1 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		com_green: com-green {
+			label = "nec:green:com";
+			gpios = <&gpio 2 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		com_red: com-red {
+			label = "nec:red:com";
+			gpios = <&gpio 3 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		wlan_green: wlan-green {
+			label = "nec:green:wlan";
+			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "phy0tpt";
+			default-state = "off";
+		};
+
+		alm_green: alm-green {
+			label = "nec:green:alm";
+			gpios = <&gpio 21 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+
+		alm_red: alm-red {
+			label = "nec:red:alm";
+			gpios = <&gpio 22 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+	};
+
+	/*
+	 * NEC stock firmware uses a GPIO-bitbanged I2C bus.
+	 * First diagnostic assumption:
+	 *   GPIO16 = SCL
+	 *   GPIO17 = SDA
+	 */
+	um310r_i2c0: i2c {
+		compatible = "i2c-gpio";
+
+		scl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+		sda-gpios = <&gpio 17 GPIO_ACTIVE_HIGH>;
+
+		/* conservative ~50 kHz for bring-up */
+		i2c-gpio,delay-us = <10>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+};
+
+/*
+ * U-Boot/strap behaviour and the stock kernel clock report are consistent
+ * with a 25 MHz reference clock.
+ */
+&ref {
+	clock-frequency = <25000000>;
+};
+
+
+&gpio {
+	pinctrl-names = "default";
+	pinctrl-0 = <&jtag_disable_pins>;
+};
+
+&pinmux {
+	pmx_um310r_switch_leds: um310r-switch-leds {
+		/*
+		 * Exact values recovered from the stock kernel:
+		 * GPIO19 = 0x29 = switch PHY1 hardware LED
+		 * GPIO20 = 0x2a = switch PHY2 hardware LED
+		 */
+		pinctrl-single,bits =
+			<0x10 0x29000000 0xff000000>,
+			<0x14 0x0000002a 0x000000ff>;
+	};
+};
+
+&builtin_switch {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pmx_um310r_switch_leds>;
+};
+
+&spi {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+
+		/*
+		 * Stock 16 MiB NOR layout recovered from /proc/mtd and a full
+		 * flash dump.  v0.1 deliberately makes EVERY stock partition
+		 * read-only: this profile is intended for RAM-only initramfs boot.
+		 */
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "u-boot";
+				reg = <0x000000 0x040000>;
+				read-only;
+			};
+
+			partition@40000 {
+				label = "u-boot-env";
+				reg = <0x040000 0x010000>;
+				read-only;
+			};
+
+			devconf: partition@50000 {
+				label = "devconf";
+				reg = <0x050000 0x010000>;
+				read-only;
+			};
+
+			partition@60000 {
+				label = "upgrade1";
+				reg = <0x060000 0x750000>;
+				read-only;
+			};
+
+			partition@7b0000 {
+				label = "reserved-7b0000";
+				reg = <0x7b0000 0x010000>;
+				read-only;
+			};
+
+			partition@7c0000 {
+				compatible = "denx,uimage";
+				label = "firmware";
+				reg = <0x7c0000 0x750000>;
+			};
+
+			partition@f10000 {
+				label = "IP Counter 64K";
+				reg = <0xf10000 0x010000>;
+				read-only;
+			};
+
+			art: partition@f20000 {
+				label = "ART";
+				reg = <0xf20000 0x010000>;
+				read-only;
+
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					cal_art_1000: calibration@1000 {
+						reg = <0x1000 0x440>;
+					};
+				};
+			};
+
+			partition@f30000 {
+				label = "devconf2";
+				reg = <0xf30000 0x010000>;
+				read-only;
+			};
+
+			partition@f40000 {
+				label = "System Log 576K";
+				reg = <0xf40000 0x090000>;
+				read-only;
+			};
+
+			partition@fd0000 {
+				label = "3G Level Log 64K";
+				reg = <0xfd0000 0x010000>;
+				read-only;
+			};
+
+			partition@fe0000 {
+				label = "Management Config 64K";
+				reg = <0xfe0000 0x010000>;
+				read-only;
+			};
+
+			partition@ff0000 {
+				label = "reserved-ff0000";
+				reg = <0xff0000 0x010000>;
+				read-only;
+			};
+		};
+	};
+};
+
+/*
+ * Stock U-Boot reports eth0 on S27 PHY4 and eth1 on the internal S27 side.
+ * This is the same topology already represented by ar934x.dtsi.
+ */
+&eth0 {
+	status = "okay";
+	phy-handle = <&swphy4>;
+};
+
+&eth1 {
+	status = "okay";
+};
+
+/* AR9350/AR9344-compatible integrated 2.4 GHz WMAC. */
+&wmac {
+	status = "okay";
+	nvmem-cells = <&cal_art_1000>;
+	nvmem-cell-names = "calibration";
+};
+
+&usb {
+	status = "okay";
+};
+
+&usb_phy {
+	status = "okay";
+};

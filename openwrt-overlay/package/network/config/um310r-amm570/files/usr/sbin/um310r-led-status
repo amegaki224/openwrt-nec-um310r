@@ -1,0 +1,214 @@
+#!/bin/sh
+
+BOARD="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+[ "$BOARD" = "nec,um310r" ] || exit 0
+
+LEDROOT=/sys/class/leds
+ANT_GREEN=nec:green:ant
+ANT_RED=nec:red:ant
+COM_GREEN=nec:green:com
+COM_RED=nec:red:com
+WLAN_GREEN=nec:green:wlan
+ALM_GREEN=nec:green:alm
+ALM_RED=nec:red:alm
+
+cfg()
+{
+	uci -q get "um310r-leds.main.$1"
+}
+
+number_or()
+{
+	case "$1" in
+		''|*[!0-9]*) echo "$2" ;;
+		*) echo "$1" ;;
+	esac
+}
+
+ENABLED="$(cfg enabled)"
+[ "${ENABLED:-1}" = "1" ] || exit 0
+
+ATDEV="$(cfg atdevice)"
+ATDEV="${ATDEV:-/dev/ttyUSB1}"
+WAN_INTERFACE="$(cfg wan_interface)"
+WAN_INTERFACE="${WAN_INTERFACE:-wan}"
+WAN_DEVICE="$(cfg wan_device)"
+WAN_DEVICE="${WAN_DEVICE:-amm570-wan}"
+POLL_INTERVAL="$(number_or "$(cfg poll_interval)" 15)"
+STARTUP_GRACE="$(number_or "$(cfg startup_grace)" 180)"
+ALARM_FAILURES="$(number_or "$(cfg alarm_failures)" 3)"
+SIGNAL_RED_MAX="$(number_or "$(cfg signal_red_max)" 9)"
+SIGNAL_ORANGE_MAX="$(number_or "$(cfg signal_orange_max)" 19)"
+
+[ "$POLL_INTERVAL" -gt 0 ] || POLL_INTERVAL=15
+[ "$ALARM_FAILURES" -gt 0 ] || ALARM_FAILURES=3
+
+led_has()
+{
+	[ -d "$LEDROOT/$1" ]
+}
+
+led_write()
+{
+	local led="$1" attr="$2" value="$3"
+	local path="$LEDROOT/$led/$attr"
+
+	[ -w "$path" ] || return 0
+	echo "$value" >"$path" 2>/dev/null || true
+}
+
+led_off()
+{
+	led_has "$1" || return 0
+	led_write "$1" trigger none
+	led_write "$1" brightness 0
+}
+
+led_on()
+{
+	local brightness
+
+	led_has "$1" || return 0
+	brightness="$(cat "$LEDROOT/$1/max_brightness" 2>/dev/null)"
+	brightness="${brightness:-1}"
+	led_write "$1" trigger none
+	led_write "$1" brightness "$brightness"
+}
+
+led_blink()
+{
+	local led="$1" on="${2:-300}" off="${3:-700}"
+	local brightness
+
+	led_has "$led" || return 0
+	brightness="$(cat "$LEDROOT/$led/max_brightness" 2>/dev/null)"
+	brightness="${brightness:-1}"
+	led_write "$led" trigger timer
+	led_write "$led" delay_on "$on"
+	led_write "$led" delay_off "$off"
+	led_write "$led" brightness "$brightness"
+}
+
+led_pair()
+{
+	local green="$1" red="$2" state="$3"
+
+	case "$state" in
+		green)
+			led_on "$green"
+			led_off "$red"
+			;;
+		red)
+			led_off "$green"
+			led_on "$red"
+			;;
+		orange)
+			led_on "$green"
+			led_on "$red"
+			;;
+		red-blink)
+			led_off "$green"
+			led_blink "$red" 300 700
+			;;
+		*)
+			led_off "$green"
+			led_off "$red"
+			;;
+	esac
+}
+
+led_netdev()
+{
+	local led="$1" dev="$2"
+
+	led_has "$led" || return 0
+	led_write "$led" trigger netdev
+	led_write "$led" device_name "$dev"
+	led_write "$led" link 1
+	led_write "$led" rx 1
+	led_write "$led" tx 1
+	led_write "$led" interval 50
+}
+
+wan_is_up()
+{
+	ubus -S call "network.interface.$WAN_INTERFACE" status 2>/dev/null |
+		grep -q '"up":[[:space:]]*true'
+}
+
+lights_off()
+{
+	led_pair "$ANT_GREEN" "$ANT_RED" off
+	led_pair "$COM_GREEN" "$COM_RED" off
+	led_pair "$ALM_GREEN" "$ALM_RED" off
+}
+
+trap 'lights_off; exit 0' HUP INT TERM
+
+# Keep the physical WLAN LED attached to the actual radio traffic trigger.
+led_write "$WLAN_GREEN" trigger phy0tpt
+lights_off
+
+elapsed=0
+at_failures=0
+wan_failures=0
+last_wan=""
+
+while :; do
+	if wan_is_up; then
+		wan_up=1
+		wan_failures=0
+	else
+		wan_up=0
+		wan_failures=$((wan_failures + 1))
+	fi
+
+	if [ "$wan_up" != "$last_wan" ]; then
+		if [ "$wan_up" = 1 ]; then
+			led_off "$COM_RED"
+			led_netdev "$COM_GREEN" "$WAN_DEVICE"
+		else
+			led_off "$COM_GREEN"
+			led_blink "$COM_RED" 300 700
+		fi
+		last_wan="$wan_up"
+	fi
+
+	csq=""
+	[ -c "$ATDEV" ] &&
+		csq="$(/usr/sbin/um310r-lte-at signal "$ATDEV" 2>/dev/null)"
+
+	case "$csq" in
+		''|*[!0-9]*)
+			at_failures=$((at_failures + 1))
+			led_pair "$ANT_GREEN" "$ANT_RED" red-blink
+			;;
+		99)
+			at_failures=$((at_failures + 1))
+			led_pair "$ANT_GREEN" "$ANT_RED" red-blink
+			;;
+		*)
+			at_failures=0
+			if [ "$csq" -le "$SIGNAL_RED_MAX" ]; then
+				led_pair "$ANT_GREEN" "$ANT_RED" red
+			elif [ "$csq" -le "$SIGNAL_ORANGE_MAX" ]; then
+				led_pair "$ANT_GREEN" "$ANT_RED" orange
+			else
+				led_pair "$ANT_GREEN" "$ANT_RED" green
+			fi
+			;;
+	esac
+
+	if [ "$elapsed" -ge "$STARTUP_GRACE" ] && {
+		[ ! -c "$ATDEV" ] ||
+		[ "$at_failures" -ge "$ALARM_FAILURES" ] ||
+		[ "$wan_failures" -ge "$ALARM_FAILURES" ];
+	}; then
+		led_pair "$ALM_GREEN" "$ALM_RED" red
+	else
+		led_pair "$ALM_GREEN" "$ALM_RED" off
+	fi
+
+	sleep "$POLL_INTERVAL"
+	elapsed=$((elapsed + POLL_INTERVAL))
+done
