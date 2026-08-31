@@ -1,0 +1,89 @@
+diff --git a/target/linux/ath79/dts/ar9344_nec_um310r.dts b/target/linux/ath79/dts/ar9344_nec_um310r.dts
+--- a/target/linux/ath79/dts/ar9344_nec_um310r.dts
++++ b/target/linux/ath79/dts/ar9344_nec_um310r.dts
+@@ -11,6 +11,59 @@
+ 	aliases {
+ 		label-mac-device = &eth0;
+ 	};
++
++	/*
++	 * PWR is hard-wired to the power rail and has no software GPIO.
++	 * ANT, COM and ALM are two-die red/green LEDs; enabling both
++	 * channels produces orange.
++	 * LAN1/LAN2 are configured below as switch hardware LEDs.
++	 */
++	leds {
++		compatible = "gpio-leds";
++
++		ant_green: ant-green {
++			label = "nec:green:ant";
++			gpios = <&gpio 0 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		ant_red: ant-red {
++			label = "nec:red:ant";
++			gpios = <&gpio 1 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		com_green: com-green {
++			label = "nec:green:com";
++			gpios = <&gpio 2 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		com_red: com-red {
++			label = "nec:red:com";
++			gpios = <&gpio 3 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		wlan_green: wlan-green {
++			label = "nec:green:wlan";
++			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++			default-state = "off";
++		};
++
++		alm_green: alm-green {
++			label = "nec:green:alm";
++			gpios = <&gpio 21 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		alm_red: alm-red {
++			label = "nec:red:alm";
++			gpios = <&gpio 22 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++	};
+ 
+ 	/*
+ 	 * NEC stock firmware uses a GPIO-bitbanged I2C bus.
+@@ -42,7 +95,25 @@
+ &gpio {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&jtag_disable_pins>;
+ };
++
++&pinmux {
++	pmx_um310r_switch_leds: um310r-switch-leds {
++		/*
++		 * Exact values recovered from the stock kernel:
++		 * GPIO19 = 0x29 = switch PHY1 hardware LED
++		 * GPIO20 = 0x2a = switch PHY2 hardware LED
++		 */
++		pinctrl-single,bits =
++			<0x10 0x29000000 0xff000000>,
++			<0x14 0x0000002a 0x000000ff>;
++	};
++};
++
++&builtin_switch {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pmx_um310r_switch_leds>;
++};
+ 
+ &spi {
+ 	status = "okay";

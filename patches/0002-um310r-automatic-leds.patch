@@ -1,0 +1,432 @@
+diff --git a/package/network/config/um310r-amm570/Makefile b/package/network/config/um310r-amm570/Makefile
+index b52e9b6..3e36fe5 100644
+--- a/package/network/config/um310r-amm570/Makefile
++++ b/package/network/config/um310r-amm570/Makefile
+@@ -1,7 +1,7 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=um310r-amm570
+-PKG_RELEASE:=2
++PKG_RELEASE:=3
+ PKGARCH:=all
+ 
+ include $(INCLUDE_DIR)/package.mk
+@@ -16,7 +16,7 @@ endef
+ define Package/um310r-amm570/description
+ Board-specific LTE support for NEC Magnus uM310R with AM Telecom AMM570.
+ Provides LTE power sequencing, USB serial binding, netifd PPP protocol
+-integration and LuCI protocol configuration.
++integration, LuCI protocol configuration and automatic chassis LED control.
+ endef
+ 
+ define Build/Compile
+@@ -26,6 +26,13 @@ define Package/um310r-amm570/install
+ 	$(INSTALL_DIR) $(1)/usr/sbin
+ 	$(INSTALL_BIN) ./files/usr/sbin/um310r-lte-power $(1)/usr/sbin/
+ 	$(INSTALL_BIN) ./files/usr/sbin/um310r-lte-at $(1)/usr/sbin/
++	$(INSTALL_BIN) ./files/usr/sbin/um310r-led-status $(1)/usr/sbin/
++
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./files/etc/init.d/um310r-leds $(1)/etc/init.d/
++
++	$(INSTALL_DIR) $(1)/etc/config
++	$(INSTALL_CONF) ./files/etc/config/um310r-leds $(1)/etc/config/
+ 
+ 	$(INSTALL_DIR) $(1)/lib/netifd/proto
+ 	$(INSTALL_BIN) ./files/lib/netifd/proto/amm570.sh $(1)/lib/netifd/proto/
+diff --git a/package/network/config/um310r-amm570/files/etc/config/um310r-leds b/package/network/config/um310r-amm570/files/etc/config/um310r-leds
+new file mode 100644
+index 0000000..b1524d1
+--- /dev/null
++++ b/package/network/config/um310r-amm570/files/etc/config/um310r-leds
+@@ -0,0 +1,10 @@
++config main 'main'
++	option enabled '1'
++	option atdevice '/dev/ttyUSB1'
++	option wan_interface 'wan'
++	option wan_device 'amm570-wan'
++	option poll_interval '15'
++	option startup_grace '180'
++	option alarm_failures '3'
++	option signal_red_max '9'
++	option signal_orange_max '19'
+diff --git a/package/network/config/um310r-amm570/files/etc/init.d/um310r-leds b/package/network/config/um310r-amm570/files/etc/init.d/um310r-leds
+new file mode 100644
+index 0000000..a32dbb6
+--- /dev/null
++++ b/package/network/config/um310r-amm570/files/etc/init.d/um310r-leds
+@@ -0,0 +1,21 @@
++#!/bin/sh /etc/rc.common
++
++START=96
++STOP=10
++USE_PROCD=1
++PROG=/usr/sbin/um310r-led-status
++
++start_service()
++{
++	procd_open_instance
++	procd_set_param command "$PROG"
++	procd_set_param respawn 3600 5 5
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_close_instance
++}
++
++service_triggers()
++{
++	procd_add_reload_trigger um310r-leds
++}
+diff --git a/package/network/config/um310r-amm570/files/usr/sbin/um310r-led-status b/package/network/config/um310r-amm570/files/usr/sbin/um310r-led-status
+new file mode 100644
+index 0000000..b4272af
+--- /dev/null
++++ b/package/network/config/um310r-amm570/files/usr/sbin/um310r-led-status
+@@ -0,0 +1,214 @@
++#!/bin/sh
++
++BOARD="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
++[ "$BOARD" = "nec,um310r" ] || exit 0
++
++LEDROOT=/sys/class/leds
++ANT_GREEN=nec:green:ant
++ANT_RED=nec:red:ant
++COM_GREEN=nec:green:com
++COM_RED=nec:red:com
++WLAN_GREEN=nec:green:wlan
++ALM_GREEN=nec:green:alm
++ALM_RED=nec:red:alm
++
++cfg()
++{
++	uci -q get "um310r-leds.main.$1"
++}
++
++number_or()
++{
++	case "$1" in
++		''|*[!0-9]*) echo "$2" ;;
++		*) echo "$1" ;;
++	esac
++}
++
++ENABLED="$(cfg enabled)"
++[ "${ENABLED:-1}" = "1" ] || exit 0
++
++ATDEV="$(cfg atdevice)"
++ATDEV="${ATDEV:-/dev/ttyUSB1}"
++WAN_INTERFACE="$(cfg wan_interface)"
++WAN_INTERFACE="${WAN_INTERFACE:-wan}"
++WAN_DEVICE="$(cfg wan_device)"
++WAN_DEVICE="${WAN_DEVICE:-amm570-wan}"
++POLL_INTERVAL="$(number_or "$(cfg poll_interval)" 15)"
++STARTUP_GRACE="$(number_or "$(cfg startup_grace)" 180)"
++ALARM_FAILURES="$(number_or "$(cfg alarm_failures)" 3)"
++SIGNAL_RED_MAX="$(number_or "$(cfg signal_red_max)" 9)"
++SIGNAL_ORANGE_MAX="$(number_or "$(cfg signal_orange_max)" 19)"
++
++[ "$POLL_INTERVAL" -gt 0 ] || POLL_INTERVAL=15
++[ "$ALARM_FAILURES" -gt 0 ] || ALARM_FAILURES=3
++
++led_has()
++{
++	[ -d "$LEDROOT/$1" ]
++}
++
++led_write()
++{
++	local led="$1" attr="$2" value="$3"
++	local path="$LEDROOT/$led/$attr"
++
++	[ -w "$path" ] || return 0
++	echo "$value" >"$path" 2>/dev/null || true
++}
++
++led_off()
++{
++	led_has "$1" || return 0
++	led_write "$1" trigger none
++	led_write "$1" brightness 0
++}
++
++led_on()
++{
++	local brightness
++
++	led_has "$1" || return 0
++	brightness="$(cat "$LEDROOT/$1/max_brightness" 2>/dev/null)"
++	brightness="${brightness:-1}"
++	led_write "$1" trigger none
++	led_write "$1" brightness "$brightness"
++}
++
++led_blink()
++{
++	local led="$1" on="${2:-300}" off="${3:-700}"
++	local brightness
++
++	led_has "$led" || return 0
++	brightness="$(cat "$LEDROOT/$led/max_brightness" 2>/dev/null)"
++	brightness="${brightness:-1}"
++	led_write "$led" trigger timer
++	led_write "$led" delay_on "$on"
++	led_write "$led" delay_off "$off"
++	led_write "$led" brightness "$brightness"
++}
++
++led_pair()
++{
++	local green="$1" red="$2" state="$3"
++
++	case "$state" in
++		green)
++			led_on "$green"
++			led_off "$red"
++			;;
++		red)
++			led_off "$green"
++			led_on "$red"
++			;;
++		orange)
++			led_on "$green"
++			led_on "$red"
++			;;
++		red-blink)
++			led_off "$green"
++			led_blink "$red" 300 700
++			;;
++		*)
++			led_off "$green"
++			led_off "$red"
++			;;
++	esac
++}
++
++led_netdev()
++{
++	local led="$1" dev="$2"
++
++	led_has "$led" || return 0
++	led_write "$led" trigger netdev
++	led_write "$led" device_name "$dev"
++	led_write "$led" link 1
++	led_write "$led" rx 1
++	led_write "$led" tx 1
++	led_write "$led" interval 50
++}
++
++wan_is_up()
++{
++	ubus -S call "network.interface.$WAN_INTERFACE" status 2>/dev/null |
++		grep -q '"up":[[:space:]]*true'
++}
++
++lights_off()
++{
++	led_pair "$ANT_GREEN" "$ANT_RED" off
++	led_pair "$COM_GREEN" "$COM_RED" off
++	led_pair "$ALM_GREEN" "$ALM_RED" off
++}
++
++trap 'lights_off; exit 0' HUP INT TERM
++
++# Keep the physical WLAN LED attached to the actual radio traffic trigger.
++led_write "$WLAN_GREEN" trigger phy0tpt
++lights_off
++
++elapsed=0
++at_failures=0
++wan_failures=0
++last_wan=""
++
++while :; do
++	if wan_is_up; then
++		wan_up=1
++		wan_failures=0
++	else
++		wan_up=0
++		wan_failures=$((wan_failures + 1))
++	fi
++
++	if [ "$wan_up" != "$last_wan" ]; then
++		if [ "$wan_up" = 1 ]; then
++			led_off "$COM_RED"
++			led_netdev "$COM_GREEN" "$WAN_DEVICE"
++		else
++			led_off "$COM_GREEN"
++			led_blink "$COM_RED" 300 700
++		fi
++		last_wan="$wan_up"
++	fi
++
++	csq=""
++	[ -c "$ATDEV" ] &&
++		csq="$(/usr/sbin/um310r-lte-at signal "$ATDEV" 2>/dev/null)"
++
++	case "$csq" in
++		''|*[!0-9]*)
++			at_failures=$((at_failures + 1))
++			led_pair "$ANT_GREEN" "$ANT_RED" red-blink
++			;;
++		99)
++			at_failures=$((at_failures + 1))
++			led_pair "$ANT_GREEN" "$ANT_RED" red-blink
++			;;
++		*)
++			at_failures=0
++			if [ "$csq" -le "$SIGNAL_RED_MAX" ]; then
++				led_pair "$ANT_GREEN" "$ANT_RED" red
++			elif [ "$csq" -le "$SIGNAL_ORANGE_MAX" ]; then
++				led_pair "$ANT_GREEN" "$ANT_RED" orange
++			else
++				led_pair "$ANT_GREEN" "$ANT_RED" green
++			fi
++			;;
++	esac
++
++	if [ "$elapsed" -ge "$STARTUP_GRACE" ] && {
++		[ ! -c "$ATDEV" ] ||
++		[ "$at_failures" -ge "$ALARM_FAILURES" ] ||
++		[ "$wan_failures" -ge "$ALARM_FAILURES" ];
++	}; then
++		led_pair "$ALM_GREEN" "$ALM_RED" red
++	else
++		led_pair "$ALM_GREEN" "$ALM_RED" off
++	fi
++
++	sleep "$POLL_INTERVAL"
++	elapsed=$((elapsed + POLL_INTERVAL))
++done
+diff --git a/package/network/config/um310r-amm570/files/usr/sbin/um310r-lte-at b/package/network/config/um310r-amm570/files/usr/sbin/um310r-lte-at
+index 99f4ba9..db28d53 100644
+--- a/package/network/config/um310r-amm570/files/usr/sbin/um310r-lte-at
++++ b/package/network/config/um310r-amm570/files/usr/sbin/um310r-lte-at
+@@ -3,9 +3,56 @@
+ ACTION="$1"
+ ATDEV="${2:-/dev/ttyUSB1}"
+ CID="${3:-2}"
++LOCKDIR="/var/lock/um310r-at.lock"
++AT_TMPFILES=""
++
++at_unlock()
++{
++	local owner
++
++	owner="$(cat "$LOCKDIR/pid" 2>/dev/null)"
++	[ "$owner" = "$$" ] || return 0
++
++	rm -f "$LOCKDIR/pid"
++	rmdir "$LOCKDIR" 2>/dev/null || true
++}
++
++at_cleanup()
++{
++	[ -z "$AT_TMPFILES" ] || rm -f $AT_TMPFILES
++	at_unlock
++}
++
++at_lock()
++{
++	local tries=0 owner
++
++	mkdir -p /var/lock
++
++	while ! mkdir "$LOCKDIR" 2>/dev/null; do
++		owner="$(cat "$LOCKDIR/pid" 2>/dev/null)"
++
++		if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
++			rm -f "$LOCKDIR/pid"
++			rmdir "$LOCKDIR" 2>/dev/null || true
++			continue
++		fi
++
++		tries=$((tries + 1))
++		[ "$tries" -lt 15 ] || return 1
++		sleep 1
++	done
++
++	echo "$$" >"$LOCKDIR/pid"
++	trap at_cleanup EXIT
++	trap 'exit 1' HUP INT TERM
++	return 0
++}
+ 
+ case "$ACTION" in
+ setup)
++	at_lock || exit 1
++
+ 	PDPTYPE="${4:-IPV4V6}"
+ 	APN="$5"
+ 	USERNAME="$6"
+@@ -25,6 +72,7 @@ setup)
+ 	sleep 1
+ 
+ 	TMP="/tmp/amm570-at-$$"
++	AT_TMPFILES="$TMP"
+ 
+ 	if [ -n "$USERNAME" ]; then
+ 		cat >"$TMP" <<EOT
+@@ -48,14 +96,12 @@ EOT
+ 	fi
+ 
+ 	chat -t 10 -f "$TMP" <"$ATDEV" >"$ATDEV"
+-	RET=$?
+-
+-	rm -f "$TMP"
+-	exit "$RET"
++	exit "$?"
+ 	;;
+ 
+ disconnect)
+ 	[ -c "$ATDEV" ] || exit 0
++	at_lock || exit 1
+ 
+ 	chat -t 5 \
+ 		'' 'AT' \
+@@ -72,10 +118,46 @@ disconnect)
+ 	exit 0
+ 	;;
+ 
++signal)
++	[ -c "$ATDEV" ] || exit 1
++	at_lock || exit 1
++
++	TMP="/tmp/amm570-csq-$$"
++	REPORT="$TMP.report"
++	AT_TMPFILES="$TMP $REPORT"
++
++	cat >"$TMP" <<'EOT'
++REPORT '+CSQ:'
++ABORT 'ERROR'
++TIMEOUT 5
++'' 'AT+CSQ'
++'OK'
++EOT
++
++	chat -t 5 -r "$REPORT" -f "$TMP" \
++		<"$ATDEV" >"$ATDEV" 2>/dev/null || exit 1
++
++	CSQ="$(sed -n \
++		's/.*+CSQ:[[:space:]]*\([0-9][0-9]*\),.*/\1/p' \
++		"$REPORT" | tail -n 1)"
++
++	case "$CSQ" in
++		''|*[!0-9]*) exit 1 ;;
++	esac
++
++	if [ "$CSQ" -le 31 ] || [ "$CSQ" -eq 99 ]; then
++		echo "$CSQ"
++		exit 0
++	fi
++
++	exit 1
++	;;
++
+ *)
+ 	echo "Usage:"
+ 	echo "  $0 setup <atdev> <cid> <IP|IPV6|IPV4V6> <apn> [username] [password]"
+ 	echo "  $0 disconnect <atdev> <cid>"
++	echo "  $0 signal [atdev]"
+ 	exit 2
+ 	;;
+ esac

@@ -1,0 +1,33 @@
+# Build output
+bin/
+build_dir/
+staging_dir/
+tmp/
+logs/
+dl/
+
+# Device-specific or proprietary dumps
+*.bin
+*.img
+*.dump
+/private-dumps/
+u-boot*.bin
+*stock*.bin
+ART*.bin
+art*.bin
+devconf*.bin
+
+# Local OpenWrt configuration and credentials
+.config
+.config.*
+*.log
+*.key
+*.pem
+credentials*
+secrets*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~

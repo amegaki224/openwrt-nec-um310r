@@ -1,0 +1,75 @@
+diff --git a/package/network/config/um310r-amm570/Makefile b/package/network/config/um310r-amm570/Makefile
+--- a/package/network/config/um310r-amm570/Makefile
++++ b/package/network/config/um310r-amm570/Makefile
+@@ -1,7 +1,7 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=um310r-amm570
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
+ PKGARCH:=all
+ 
+ include $(INCLUDE_DIR)/package.mk
+@@ -26,6 +26,7 @@ define Package/um310r-amm570/install
+ 	$(INSTALL_BIN) ./files/usr/sbin/um310r-lte-power $(1)/usr/sbin/
+ 	$(INSTALL_BIN) ./files/usr/sbin/um310r-lte-at $(1)/usr/sbin/
+ 	$(INSTALL_BIN) ./files/usr/sbin/um310r-led-status $(1)/usr/sbin/
++	$(INSTALL_BIN) ./files/usr/sbin/um310r-ppp-up $(1)/usr/sbin/
+ 
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./files/etc/init.d/um310r-leds $(1)/etc/init.d/
+diff --git a/package/network/config/um310r-amm570/files/lib/netifd/proto/amm570.sh b/package/network/config/um310r-amm570/files/lib/netifd/proto/amm570.sh
+--- a/package/network/config/um310r-amm570/files/lib/netifd/proto/amm570.sh
++++ b/package/network/config/um310r-amm570/files/lib/netifd/proto/amm570.sh
+@@ -93,13 +93,15 @@ proto_amm570_setup()
+ 		ppp_generic_setup "$config" \
+ 			"$device" \
+ 			modem \
+ 			nocrtscts \
++			ip-up-script /usr/sbin/um310r-ppp-up \
+ 			set EXTENDPREFIX=1
+ 	else
+ 		ppp_generic_setup "$config" \
+ 			"$device" \
+ 			modem \
+-			nocrtscts
++			nocrtscts \
++			ip-up-script /usr/sbin/um310r-ppp-up
+ 	fi
+ }
+ 
+diff --git a/package/network/config/um310r-amm570/files/etc/uci-defaults/96-um310r-ipv6-rfc7278 b/package/network/config/um310r-amm570/files/etc/uci-defaults/96-um310r-ipv6-rfc7278
+--- a/package/network/config/um310r-amm570/files/etc/uci-defaults/96-um310r-ipv6-rfc7278
++++ b/package/network/config/um310r-amm570/files/etc/uci-defaults/96-um310r-ipv6-rfc7278
+@@ -16,6 +16,12 @@ if [ "$(uci -q get network.wan.pppd_options)" = "set EXTENDPREFIX=1" ]; then
+ 	uci -q delete network.wan.pppd_options
+ fi
+ 
++# Release 4 selects the delayed hook directly in amm570.sh.  Remove the
++# exact temporary setting used while validating the netifd race workaround.
++if [ "$(uci -q get network.wan.pppd_options)" = "ip-up-script /usr/sbin/um310r-ppp-up" ]; then
++	uci -q delete network.wan.pppd_options
++fi
++
+ uci set network.lan.ip6assign='64'
+ 
+ uci -q get dhcp.lan >/dev/null ||
+diff --git a/package/network/config/um310r-amm570/files/usr/sbin/um310r-ppp-up b/package/network/config/um310r-amm570/files/usr/sbin/um310r-ppp-up
+new file mode 100755
+--- /dev/null
++++ b/package/network/config/um310r-amm570/files/usr/sbin/um310r-ppp-up
+@@ -0,0 +1,13 @@
++#!/bin/sh
++
++# The AMM570 can finish IPCP before netifd has completed registration of the
++# custom amm570 protocol handler.  In that race, the stock ppp-up notification
++# is lost: the kernel PPP device has an address, while netifd remains pending
++# and installs neither the default route nor the dynamic DHCPv6 child.
++#
++# A three-second delay was validated across repeated dual-stack reconnects.
++sleep 3
++
++/lib/netifd/ppp-up "$@"
++# The stock hook returns 1 when /etc/ppp/ip-up.d is absent despite a successful
++# notify_proto call.  The notification result, not that optional directory, matters.
++exit 0
