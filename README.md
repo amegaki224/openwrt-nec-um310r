@@ -39,6 +39,12 @@ BBR and FullCone NAT are included in the tested firmware but intentionally are
 not enabled by default. FullCone is configured in the firewall `defaults`
 section by the imported firewall4 implementation, not directly on the WAN zone.
 
+## Installation
+
+Read [docs/flashing.md](docs/flashing.md) before booting or flashing. The stock
+unattended U-Boot path must raise GPIO15 before running `bootopenwrt` to avoid
+the board's external reset monitor rebooting the unit after roughly 33 seconds.
+
 ## Complete source overlay
 
 `openwrt-overlay/` preserves the original OpenWrt tree paths. Copy it over a
@@ -81,7 +87,7 @@ included in this repository.
 - Tested factory image size: `7,208,964` bytes (`0x6e0004`)
 - Remaining partition space: `458,748` bytes
 - Tested factory image SHA-256:
-  `55643dea4dca60d6a0c5c5b15baee8085d60eb6784995e990d2c2e819e77d1ff`
+  `5dbc1638f811cfac90558f749135fa928cbea538a2b4a7d8b1a70f4942c0f86f`
 - Tested RAM-image CRC32 before flashing: `1ebb04eb`
 
 Always verify the downloaded image checksum, `iminfo`, and RAM/flash CRC before
@@ -93,8 +99,11 @@ The following are intentionally excluded:
 
 - stock firmware and U-Boot binaries
 - ART/calibration, environment, `devconf`, and management partitions
-- modem or carrier credentials
 - logs that may contain addresses, identifiers, or passwords
+
+The public source overlay omits carrier authentication credentials. The
+published tested binaries retain their original shared carrier defaults; see
+the corresponding Release notes and flashing guide before installation.
 
 OpenWrt-derived files retain the license terms and SPDX identifiers of their
 respective upstream files.
