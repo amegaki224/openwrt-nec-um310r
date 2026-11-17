@@ -81,7 +81,8 @@ TIMEOUT 10
 '' AT
 OK ATE0
 OK AT+CGDCONT=$CID,"$PDPTYPE","$APN"
-OK AT\$QCPDPP=$CID,3,"$USERNAME","$PASSWORD"
+# Qualcomm QCPDPP syntax is: cid, auth, password, username.
+OK AT\$QCPDPP=$CID,3,"$PASSWORD","$USERNAME"
 OK
 EOT
 	else
